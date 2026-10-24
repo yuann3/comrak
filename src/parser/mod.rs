@@ -684,60 +684,14 @@ where
         Some(())
     }
 
-    fn deepest_last_end(node: Node<'a>) -> Option<nodes::LineColumn> {
-        let mut last = node.last_child()?;
-        let mut best: Option<nodes::LineColumn> = None;
-
-        loop {
-            let end = last.data().sourcepos.end;
-            if end.column != 0 {
-                let wider = match best {
-                    None => true,
-                    Some(b) => end.line > b.line || (end.line == b.line && end.column > b.column),
-                };
-                if wider {
-                    best = Some(end);
-                }
-            }
-            match last.last_child() {
-                Some(child) => last = child,
-                None => break,
-            }
-        }
-
-        best
-    }
-
     // Walk the subtree rooted at each child of `container` in post-order
     // and, where a node's end column is zero, attempt to adopt the widest
     // non-zero end column along its deepest-last path; otherwise
     // fall back to the node's start position.
     // Returns a candidate end position for `container` if found.
     fn fix_zero_end_columns(&mut self, container: Node<'a>) -> Option<nodes::LineColumn> {
-        // explicit stack for post-order traversal: (node, visited)
-        let mut stack: Vec<(Node<'a>, bool)> = Vec::new();
-
         for ch in container.children() {
-            stack.push((ch, false));
-
-            while let Some((node, visited)) = stack.pop() {
-                if !visited {
-                    stack.push((node, true));
-                    for c in node.children() {
-                        stack.push((c, false));
-                    }
-                } else {
-                    let end_col = node.data().sourcepos.end.column;
-                    if end_col == 0 {
-                        if let Some(pos) = Self::deepest_last_end(node) {
-                            node.data_mut().sourcepos.end = pos;
-                        } else {
-                            let mut ast = node.data_mut();
-                            ast.sourcepos.end = ast.sourcepos.start;
-                        }
-                    }
-                }
-            }
+            Self::fix_zero_end_columns_below(ch);
         }
 
         // Compute a candidate end position for the container by looking at
@@ -756,6 +710,68 @@ where
             }
         }
         None
+    }
+
+    /// Fixes zero end columns in `node`'s subtree, as for
+    /// `fix_zero_end_columns`, and returns the widest non-zero end on
+    /// `node`'s deepest-last path, `node` included.
+    ///
+    /// Each node's widest end comes from its last child's, rather than from
+    /// walking its deepest-last path again, which took quadratic time in
+    /// deeply nested input. The walk uses an explicit stack, so deep nesting
+    /// doesn't overflow the call stack.
+    fn fix_zero_end_columns_below(node: Node<'a>) -> Option<nodes::LineColumn> {
+        fn wider(a: Option<nodes::LineColumn>, b: nodes::LineColumn) -> Option<nodes::LineColumn> {
+            match a {
+                _ if b.column == 0 => a,
+                Some(a) if a.line > b.line || (a.line == b.line && a.column >= b.column) => Some(a),
+                _ => Some(b),
+            }
+        }
+
+        struct Frame<'a> {
+            node: Node<'a>,
+            visited: bool,
+            /// The stack index of the parent's frame, set on a last child.
+            parent: Option<usize>,
+            /// The widest end on the deepest-last path below `node`.
+            below: Option<nodes::LineColumn>,
+        }
+
+        let mut stack = vec![Frame {
+            node,
+            visited: false,
+            parent: None,
+            below: None,
+        }];
+        loop {
+            let ix = stack.len() - 1;
+            if !stack[ix].visited {
+                stack[ix].visited = true;
+                let node = stack[ix].node;
+                for c in node.children() {
+                    stack.push(Frame {
+                        node: c,
+                        visited: false,
+                        parent: c.next_sibling().is_none().then_some(ix),
+                        below: None,
+                    });
+                }
+                continue;
+            }
+
+            let frame = stack.pop().unwrap();
+            let mut ast = frame.node.data_mut();
+            if ast.sourcepos.end.column == 0 {
+                ast.sourcepos.end = frame.below.unwrap_or(ast.sourcepos.start);
+            }
+            let widest = wider(frame.below, ast.sourcepos.end);
+            match frame.parent {
+                Some(parent) => stack[parent].below = widest,
+                None if stack.is_empty() => return widest,
+                None => {}
+            }
+        }
     }
 
     /////////////////////
@@ -2219,7 +2235,10 @@ where
             | NodeValue::DescriptionDetails => {
                 self.fix_zero_end_columns(node);
                 if ast.sourcepos.end.column == 0 {
-                    ast.sourcepos.end = Self::deepest_last_end(node).unwrap_or(ast.sourcepos.start);
+                    ast.sourcepos.end = node
+                        .last_child()
+                        .and_then(Self::fix_zero_end_columns_below)
+                        .unwrap_or(ast.sourcepos.start);
                 }
             }
             NodeValue::Paragraph => {

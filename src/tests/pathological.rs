@@ -274,3 +274,17 @@ fn pathological_autolinks_in_angle_brackets() {
 
     html_opts!([extension.autolink], &input, &exp, no_roundtrip);
 }
+
+#[test]
+#[timeout(4000)]
+fn pathological_block_directive_around_nested_quotes() {
+    let n = 50_000;
+    let input = format!(":::a\n{}\n:::\n", ">".repeat(n));
+    let exp = format!(
+        "<div class=\"a\">\n{}{}</div>\n",
+        "<blockquote>\n".repeat(n),
+        "</blockquote>\n".repeat(n)
+    );
+
+    html_opts!([extension.block_directive], &input, &exp, no_roundtrip);
+}

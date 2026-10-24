@@ -134,6 +134,8 @@ pub struct Subject<'a: 'd, 'r, 'o, 'd, 'c, 'p> {
     /// fails: an earlier one reached the end of the input without finding
     /// one. Without it, a run of unclosed `` $` `` takes quadratic time.
     no_closing_code_dollar_from: usize,
+    /// The same for closing dollar signs, by how many there are.
+    no_closing_dollars_from: [usize; MAX_MATH_DOLLARS + 1],
     no_link_openers: bool,
     pub(crate) relaxed_autolink_dead_zone_end: usize,
 }
@@ -178,6 +180,7 @@ impl<'a, 'r, 'o, 'd, 'c, 'p> Subject<'a, 'r, 'o, 'd, 'c, 'p> {
             backticks: [0; MAXBACKTICKS + 1],
             scanned_for_backticks: false,
             no_closing_code_dollar_from: usize::MAX,
+            no_closing_dollars_from: [usize::MAX; MAX_MATH_DOLLARS + 1],
             no_link_openers: true,
             relaxed_autolink_dead_zone_end: 0,
         }
@@ -2230,10 +2233,18 @@ impl<'a, 'r, 'o, 'd, 'c, 'p> Subject<'a, 'r, 'o, 'd, 'c, 'p> {
             return None;
         }
 
+        // A scan only reaches the end of the input when every `$` after its
+        // start is escaped (one) or alone (two), so every later scan for
+        // as many reaches it too.
+        if self.scanner.pos >= self.no_closing_dollars_from[opendollarlength] {
+            return None;
+        }
+        let startpos = self.scanner.pos;
         let matcher = dollar_matcher();
         loop {
             let Some(index) = matcher.find(&self.input.as_bytes()[self.scanner.pos..]) else {
                 self.scanner.pos = self.input.len();
+                self.no_closing_dollars_from[opendollarlength] = startpos;
                 return None;
             };
             self.scanner.pos += index;

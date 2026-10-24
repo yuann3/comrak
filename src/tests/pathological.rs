@@ -251,3 +251,13 @@ fn pathological_unclosed_math_code() {
 
     html_opts!([extension.math_code], &input, &exp, no_roundtrip);
 }
+
+#[test]
+#[timeout(4000)]
+fn pathological_unclosed_math_dollars() {
+    let n = 30_000;
+    let input = "\\\\$".repeat(n);
+    let exp = format!("<p>{}</p>\n", "\\$".repeat(n));
+
+    html_opts!([extension.math_dollars], &input, &exp, no_roundtrip);
+}

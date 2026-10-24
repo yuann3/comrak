@@ -12,6 +12,7 @@ mod table;
 use std::borrow::Cow;
 use std::cmp::{Ordering, min};
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt::Debug;
 use std::mem;
 use std::str;
@@ -2603,7 +2604,11 @@ where
     fn process_footnotes(&mut self) {
         // TODO: combine find_footnote_definitions and find_footnote_references into one pass!
         let mut fd_map = HashMap::new();
-        Self::find_footnote_definitions(self.root, &mut fd_map);
+        Self::find_footnote_definitions(
+            self.root,
+            &mut fd_map,
+            self.options.parse.leave_footnote_definitions,
+        );
 
         let mut next_ix = 0;
         self.find_footnote_references(&mut fd_map, &mut next_ix);
@@ -2629,24 +2634,35 @@ where
     fn find_footnote_definitions(
         root: Node<'a>,
         map: &mut HashMap<String, FootnoteDefinition<'a>>,
+        leave: bool,
     ) {
+        let mut duplicates = Vec::new();
         let mut stack = vec![root];
         while let Some(node) = stack.pop() {
             match node.data().value {
+                // The first definition of a label wins, as a link
+                // reference definition's does; the others are dropped.
                 NodeValue::FootnoteDefinition(ref nfd) => {
-                    map.insert(
-                        strings::normalize_label(&nfd.name, Case::Fold),
-                        FootnoteDefinition {
-                            ix: None,
-                            node,
-                            name: strings::normalize_label(&nfd.name, Case::Preserve),
-                            total_references: 0,
-                        },
-                    );
+                    match map.entry(strings::normalize_label(&nfd.name, Case::Fold)) {
+                        Entry::Vacant(e) => {
+                            e.insert(FootnoteDefinition {
+                                ix: None,
+                                node,
+                                name: strings::normalize_label(&nfd.name, Case::Preserve),
+                                total_references: 0,
+                            });
+                        }
+                        Entry::Occupied(_) => duplicates.push(node),
+                    }
                 }
                 _ => {
                     stack.extend(node.reverse_children());
                 }
+            }
+        }
+        if !leave {
+            for node in duplicates {
+                node.detach();
             }
         }
     }

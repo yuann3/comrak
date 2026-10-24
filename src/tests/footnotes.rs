@@ -74,6 +74,24 @@ fn footnotes() {
 }
 
 #[test]
+fn footnote_first_definition_wins() {
+    html_opts!(
+        [extension.footnotes],
+        concat!("x[^a]\n", "\n", "[^a]: first\n", "\n", "[^a]: second\n"),
+        concat!(
+            "<p>x<sup class=\"footnote-ref\"><a href=\"#fn-a\" id=\"fnref-a\" data-footnote-ref>1</a></sup></p>\n",
+            "<section class=\"footnotes\" data-footnotes>\n",
+            "<ol>\n",
+            "<li id=\"fn-a\">\n",
+            "<p>first <a href=\"#fnref-a\" class=\"footnote-backref\" data-footnote-backref data-footnote-backref-idx=\"1\" aria-label=\"Back to reference 1\">↩</a></p>\n",
+            "</li>\n",
+            "</ol>\n",
+            "</section>\n"
+        ),
+    );
+}
+
+#[test]
 fn footnote_does_not_eat_exclamation() {
     html_opts!(
         [extension.footnotes],

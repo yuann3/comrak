@@ -2268,27 +2268,73 @@ where
         self.propagate_list_sourcepos(self.root);
     }
 
+    /// Extends each list's end to the furthest non-zero end among its
+    /// descendants.
+    ///
+    /// One post-order walk carries each subtree's furthest end up to its
+    /// parent. Walking every list's descendants instead visited a node once
+    /// per list around it, a hundred times in a list nested as deep as
+    /// lists go.
     fn propagate_list_sourcepos(&mut self, root: Node<'a>) {
         if !self.saw_list {
             return;
         }
-        for node in root.descendants() {
-            if !matches!(node.data().value, NodeValue::List(..)) {
+
+        fn further(a: nodes::LineColumn, b: Option<nodes::LineColumn>) -> nodes::LineColumn {
+            match b {
+                Some(b) if b.line > a.line || (b.line == a.line && b.column > a.column) => b,
+                _ => a,
+            }
+        }
+
+        struct Frame<'a> {
+            node: Node<'a>,
+            visited: bool,
+            parent: Option<usize>,
+            /// The furthest non-zero end among `node`'s descendants.
+            below: Option<nodes::LineColumn>,
+        }
+
+        let mut stack = vec![Frame {
+            node: root,
+            visited: false,
+            parent: None,
+            below: None,
+        }];
+        while let Some(ix) = stack.len().checked_sub(1) {
+            if !stack[ix].visited {
+                stack[ix].visited = true;
+                let node = stack[ix].node;
+                for c in node.children() {
+                    stack.push(Frame {
+                        node: c,
+                        visited: false,
+                        parent: Some(ix),
+                        below: None,
+                    });
+                }
                 continue;
             }
-            let mut max_end = node.data().sourcepos.end;
-            for d in node.descendants() {
-                let de = d.data().sourcepos.end;
-                if de.column == 0 {
-                    continue;
-                }
-                if de.line > max_end.line || (de.line == max_end.line && de.column > max_end.column)
-                {
-                    max_end = de;
+
+            let frame = stack.pop().unwrap();
+            let mut ast = frame.node.data_mut();
+            if matches!(ast.value, NodeValue::List(..)) {
+                let max_end = further(ast.sourcepos.end, frame.below);
+                if max_end.column != 0 {
+                    ast.sourcepos.end = max_end;
                 }
             }
-            if max_end.column != 0 {
-                node.data_mut().sourcepos.end = max_end;
+            let end = ast.sourcepos.end;
+            if let Some(parent) = frame.parent {
+                let below = &mut stack[parent].below;
+                let mine = if end.column == 0 {
+                    frame.below
+                } else {
+                    Some(further(end, frame.below))
+                };
+                if let Some(mine) = mine {
+                    *below = Some(below.map_or(mine, |b| further(b, Some(mine))));
+                }
             }
         }
     }

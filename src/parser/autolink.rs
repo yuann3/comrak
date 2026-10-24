@@ -270,7 +270,13 @@ pub fn www_match<'a>(
     // Skip over "www." for domain validation, but account for its length in the overall link
     let mut link_end = check_domain(&subject.input[i + 4..], relaxed_autolinks)? + 4;
 
-    while i + link_end < subject.input.len() && !isspace(bytes[i + link_end]) {
+    // autolink_delim ends the link at its first '<', so looking further
+    // only costs time: quadratic time on a run of links without spaces.
+    // The relaxed scan has to go on to find a `](` after it.
+    while i + link_end < subject.input.len()
+        && !isspace(bytes[i + link_end])
+        && (relaxed_autolinks || bytes[i + link_end] != b'<')
+    {
         // basic test to detect whether we're in a normal markdown link - not exhaustive
         if relaxed_autolinks && bytes[i + link_end - 1] == b']' && bytes[i + link_end] == b'(' {
             subject.relaxed_autolink_dead_zone_end = i + link_end;
@@ -477,7 +483,11 @@ pub fn url_match<'a>(
 
     let mut link_end = check_domain(&subject.input[i + 3..], true)? + 3;
 
-    while link_end < size - i && !isspace(bytes[i + link_end]) {
+    // As in www_match.
+    while link_end < size - i
+        && !isspace(bytes[i + link_end])
+        && (relaxed_autolinks || bytes[i + link_end] != b'<')
+    {
         // basic test to detect whether we're in a normal markdown link - not exhaustive
         if relaxed_autolinks
             && link_end > 0

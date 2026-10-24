@@ -261,3 +261,16 @@ fn pathological_unclosed_math_dollars() {
 
     html_opts!([extension.math_dollars], &input, &exp, no_roundtrip);
 }
+
+#[test]
+#[timeout(4000)]
+fn pathological_autolinks_in_angle_brackets() {
+    let n = 30_000;
+    let input = "<http://a".repeat(n);
+    let exp = format!(
+        "<p>{}</p>\n",
+        "&lt;<a href=\"http://a\">http://a</a>".repeat(n)
+    );
+
+    html_opts!([extension.autolink], &input, &exp, no_roundtrip);
+}

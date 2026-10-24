@@ -130,6 +130,10 @@ pub struct Subject<'a: 'd, 'r, 'o, 'd, 'c, 'p> {
     brackets: SmallVec<[Bracket<'a>; 8]>,
     pub backticks: [usize; MAXBACKTICKS + 1],
     pub scanned_for_backticks: bool,
+    /// A scan for the closing `` `$ `` of math code from here or later
+    /// fails: an earlier one reached the end of the input without finding
+    /// one. Without it, a run of unclosed `` $` `` takes quadratic time.
+    no_closing_code_dollar_from: usize,
     no_link_openers: bool,
     pub(crate) relaxed_autolink_dead_zone_end: usize,
 }
@@ -173,6 +177,7 @@ impl<'a, 'r, 'o, 'd, 'c, 'p> Subject<'a, 'r, 'o, 'd, 'c, 'p> {
             brackets: SmallVec::new(),
             backticks: [0; MAXBACKTICKS + 1],
             scanned_for_backticks: false,
+            no_closing_code_dollar_from: usize::MAX,
             no_link_openers: true,
             relaxed_autolink_dead_zone_end: 0,
         }
@@ -2262,10 +2267,15 @@ impl<'a, 'r, 'o, 'd, 'c, 'p> Subject<'a, 'r, 'o, 'd, 'c, 'p> {
     fn scan_to_closing_code_dollar(&mut self) -> Option<usize> {
         assert!(self.options.extension.math_code);
 
+        if self.scanner.pos >= self.no_closing_code_dollar_from {
+            return None;
+        }
+        let startpos = self.scanner.pos;
         let matcher = dollar_matcher();
         loop {
             let Some(index) = matcher.find(&self.input.as_bytes()[self.scanner.pos..]) else {
                 self.scanner.pos = self.input.len();
+                self.no_closing_code_dollar_from = startpos;
                 return None;
             };
             self.scanner.pos += index;

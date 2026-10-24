@@ -241,3 +241,13 @@ fn pathological_header_ids() {
         no_roundtrip
     );
 }
+
+#[test]
+#[timeout(4000)]
+fn pathological_unclosed_math_code() {
+    let n = 30_000;
+    let input = "$`:".repeat(n);
+    let exp = format!("<p>{}</p>\n", "$<code>:$</code>:".repeat(n / 2));
+
+    html_opts!([extension.math_code], &input, &exp, no_roundtrip);
+}

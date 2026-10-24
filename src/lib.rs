@@ -94,7 +94,10 @@ pub use html::format_document as format_html;
 pub use html::format_document_with_plugins as format_html_with_plugins;
 pub use nodes::Node;
 pub use parser::options;
-pub use parser::{Options, ResolvedReference, parse_document};
+pub use parser::{
+    Options, OutOfFuel, ResolvedReference, fuel_for, parse_document, parse_document_bounded,
+    parse_document_with_fuel,
+};
 pub use xml::format_document as format_xml;
 pub use xml::format_document_with_plugins as format_xml_with_plugins;
 

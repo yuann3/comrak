@@ -288,3 +288,44 @@ fn pathological_block_directive_around_nested_quotes() {
 
     html_opts!([extension.block_directive], &input, &exp, no_roundtrip);
 }
+
+#[test]
+#[timeout(4000)]
+fn pathological_nested_block_directives_run_out_of_fuel() {
+    // Each line is matched against every directive open around it, so this
+    // takes quadratic time unbounded.
+    let prose = "Some prose.\r\n\r\n";
+    let input = format!("{prose}{}", ":::a\r\n".repeat(50_000));
+    let mut options = Options::default();
+    options.extension.block_directive = true;
+
+    let arena = Arena::new();
+    let result = parse_document_bounded(&arena, &input, &options);
+    assert_eq!(
+        result.err(),
+        Some(OutOfFuel {
+            offset: prose.len()
+        })
+    );
+}
+
+#[test]
+fn bounded_parse_matches_unbounded() {
+    let input = "::::a\n:::b\n- x\n  > y\n\n  z\n:::\n::::\n\n".repeat(100);
+    let mut options = Options::default();
+    options.extension.block_directive = true;
+    options.render.sourcepos = true;
+
+    let arena = Arena::new();
+    let mut unbounded = String::new();
+    html::format_document(
+        parse_document(&arena, &input, &options),
+        &options,
+        &mut unbounded,
+    )
+    .unwrap();
+    let mut bounded = String::new();
+    let root = parse_document_bounded(&arena, &input, &options).unwrap();
+    html::format_document(root, &options, &mut bounded).unwrap();
+    assert_eq!(bounded, unbounded);
+}

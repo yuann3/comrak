@@ -46,6 +46,60 @@ const MAX_LIST_DEPTH: usize = 100;
 ///
 /// See the documentation of the crate root for an example.
 pub fn parse_document<'a>(arena: &'a Arena<'a>, md: &str, options: &Options) -> Node<'a> {
+    let Ok(document) = parse_document_with_fuel(arena, md, options, u64::MAX) else {
+        unreachable!("a parse spends at most one unit of fuel per step")
+    };
+    document
+}
+
+/// Fuel per byte of input to [`parse_document_bounded`].
+const FUEL_PER_BYTE: u64 = 8;
+/// Fuel every bounded parse gets on top, so that a small input has room.
+const FUEL_BASE: u64 = 10_000;
+
+/// Parse a Markdown document to an AST in time linear in its length, or
+/// fail with [`OutOfFuel`].
+///
+/// Some inputs make the block parser do work in proportion to the
+/// product of the nesting depth and the number of lines, such as block
+/// directives nested in each other, which close only on a fence and so
+/// need no prefix on each line. A bounded parse gets [`fuel_for`] the
+/// input's length and spends a unit on each open block it matches a line
+/// against, and on each node it visits when fixing up a closed
+/// container's source positions. When the fuel runs out, the parse stops.
+///
+/// On input that doesn't run out, the AST is the one [`parse_document`]
+/// returns.
+pub fn parse_document_bounded<'a>(
+    arena: &'a Arena<'a>,
+    md: &str,
+    options: &Options,
+) -> Result<Node<'a>, OutOfFuel> {
+    parse_document_with_fuel(arena, md, options, fuel_for(md.len()))
+}
+
+/// The fuel [`parse_document_bounded`] gives an input of `len` bytes.
+pub fn fuel_for(len: usize) -> u64 {
+    FUEL_BASE.saturating_add((len as u64).saturating_mul(FUEL_PER_BYTE))
+}
+
+/// A bounded parse ran out of fuel: see [`parse_document_bounded`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutOfFuel {
+    /// The byte offset in the input of the top-level block that was being
+    /// parsed when the fuel ran out, such as the outermost of a run of
+    /// nested block directives.
+    pub offset: usize,
+}
+
+/// [`parse_document_bounded`] with `fuel` units of fuel, for measuring
+/// how much of it an input needs.
+pub fn parse_document_with_fuel<'a>(
+    arena: &'a Arena<'a>,
+    md: &str,
+    options: &Options,
+    fuel: u64,
+) -> Result<Node<'a>, OutOfFuel> {
     let root = arena.alloc(
         Ast {
             value: NodeValue::Document,
@@ -60,11 +114,35 @@ pub fn parse_document<'a>(arena: &'a Arena<'a>, md: &str, options: &Options) -> 
         .into(),
     );
     let delimiter_arena = typed_arena::Arena::new();
-    let document = Parser::new(arena, root, options, &delimiter_arena).parse(md);
+    let document = Parser::new(arena, root, options, &delimiter_arena, fuel)
+        .parse(md)
+        .map_err(|opener| OutOfFuel {
+            offset: byte_offset(md, opener),
+        })?;
     if options.parse.sourcepos_chars {
         convert_sourcepos_columns_to_chars(document, md);
     }
-    document
+    Ok(document)
+}
+
+/// The byte offset in `md` of `pos`, whose column is in bytes. Lines end
+/// as the parser ends them, at CR, LF or CRLF.
+fn byte_offset(md: &str, pos: nodes::LineColumn) -> usize {
+    let bytes = md.as_bytes();
+    let mut line_start = 0;
+    for _ in 1..pos.line {
+        let Some(eol) = bytes[line_start..]
+            .iter()
+            .position(|&b| b == b'\r' || b == b'\n')
+        else {
+            break;
+        };
+        line_start += eol + 1;
+        if bytes[line_start - 1] == b'\r' && bytes.get(line_start) == Some(&b'\n') {
+            line_start += 1;
+        }
+    }
+    (line_start + pos.column.saturating_sub(1)).min(md.len())
 }
 
 /// Convert all byte-based column values in the AST's sourcepos to char-based.
@@ -141,6 +219,13 @@ pub struct Parser<'a: 'd, 'o, 'c, 'd> {
     total_size: usize,
     #[cfg(feature = "phoenix_heex")]
     heex_block_depth: usize,
+    /// Fuel left; see [`parse_document_bounded`].
+    fuel: u64,
+    /// Where the latest top-level block starts.
+    top_level_start: nodes::LineColumn,
+    /// Set when the fuel ran out: where the top-level block being parsed
+    /// then starts.
+    out_of_fuel: Option<nodes::LineColumn>,
 }
 
 /// A reference link's resolved details.
@@ -169,6 +254,7 @@ where
         root: Node<'a>,
         options: &'o Options<'c>,
         delimiter_arena: &'d typed_arena::Arena<inlines::Delimiter<'a, 'd>>,
+        fuel: u64,
     ) -> Self {
         Parser {
             arena,
@@ -196,10 +282,30 @@ where
             total_size: 0,
             #[cfg(feature = "phoenix_heex")]
             heex_block_depth: 0,
+            fuel,
+            top_level_start: (1, 1).into(),
+            out_of_fuel: None,
         }
     }
 
-    fn parse(mut self, mut s: &str) -> Node<'a> {
+    /// Spends a unit of fuel, and says whether the fuel has run out.
+    fn burn(&mut self) -> bool {
+        if self.out_of_fuel.is_some() {
+            return true;
+        }
+        match self.fuel.checked_sub(1) {
+            Some(left) => {
+                self.fuel = left;
+                false
+            }
+            None => {
+                self.out_of_fuel = Some(self.top_level_start);
+                true
+            }
+        }
+    }
+
+    fn parse(mut self, mut s: &str) -> Result<Node<'a>, nodes::LineColumn> {
         if let Some(delimiter) = &self.options.extension.front_matter_delimiter
             && let Some((front_matter, rest)) = split_off_front_matter(s, delimiter)
         {
@@ -217,7 +323,7 @@ where
         let matcher = cr_or_lf_matcher();
         let mut matches = matcher.iter(sb);
 
-        while ix < end {
+        while ix < end && self.out_of_fuel.is_none() {
             let mut eol = matches.next().unwrap_or(end);
             if eol < end {
                 if sb[eol] == b'\r' {
@@ -236,9 +342,15 @@ where
             matches.advance_to(ix);
         }
 
+        if let Some(opener) = self.out_of_fuel {
+            return Err(opener);
+        }
         self.finalize_document();
+        if let Some(opener) = self.out_of_fuel {
+            return Err(opener);
+        }
         self.postprocess_text_nodes(self.root);
-        self.root
+        Ok(self.root)
     }
 
     fn handle_front_matter(&mut self, front_matter: &str, delimiter: &str) {
@@ -332,6 +444,9 @@ where
             if !container.last_child_is_open() {
                 all_matched = true;
                 break;
+            }
+            if self.burn() {
+                return None;
             }
             container = container.last_child().unwrap();
             let ast = &mut container.data_mut();
@@ -691,7 +806,7 @@ where
     // Returns a candidate end position for `container` if found.
     fn fix_zero_end_columns(&mut self, container: Node<'a>) -> Option<nodes::LineColumn> {
         for ch in container.children() {
-            Self::fix_zero_end_columns_below(ch);
+            self.fix_zero_end_columns_below(ch);
         }
 
         // Compute a candidate end position for the container by looking at
@@ -720,7 +835,7 @@ where
     /// walking its deepest-last path again, which took quadratic time in
     /// deeply nested input. The walk uses an explicit stack, so deep nesting
     /// doesn't overflow the call stack.
-    fn fix_zero_end_columns_below(node: Node<'a>) -> Option<nodes::LineColumn> {
+    fn fix_zero_end_columns_below(&mut self, node: Node<'a>) -> Option<nodes::LineColumn> {
         fn wider(a: Option<nodes::LineColumn>, b: nodes::LineColumn) -> Option<nodes::LineColumn> {
             match a {
                 _ if b.column == 0 => a,
@@ -747,6 +862,11 @@ where
         loop {
             let ix = stack.len() - 1;
             if !stack[ix].visited {
+                // Containers nested in each other are each walked when
+                // they close, so the walks can add up to quadratic time.
+                if self.burn() {
+                    return None;
+                }
                 stack[ix].visited = true;
                 let node = stack[ix].node;
                 for c in node.children() {
@@ -1881,6 +2001,9 @@ where
 
         assert!(start_column > 0);
 
+        if parent.same_node(self.root) {
+            self.top_level_start = (self.line_number, start_column).into();
+        }
         let mut child = Ast::new(value, (self.line_number, start_column).into());
         if child.value.has_block_lines() {
             child.lines = Some(Box::default());
@@ -2237,7 +2360,7 @@ where
                 if ast.sourcepos.end.column == 0 {
                     ast.sourcepos.end = node
                         .last_child()
-                        .and_then(Self::fix_zero_end_columns_below)
+                        .and_then(|last| self.fix_zero_end_columns_below(last))
                         .unwrap_or(ast.sourcepos.start);
                 }
             }

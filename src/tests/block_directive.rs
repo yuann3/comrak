@@ -138,3 +138,16 @@ fn sourcepos_in_blockquote() {
         ])
     );
 }
+
+#[test]
+fn info_with_colons() {
+    html_opts!(
+        [extension.block_directive],
+        concat!("::::theorem[Proof: one]{#thm:a}\n", "a\n", "::::\n",),
+        concat!(
+            "<div class=\"theorem[Proof: one]{#thm:a}\">\n",
+            "<p>a</p>\n",
+            "</div>\n",
+        ),
+    );
+}

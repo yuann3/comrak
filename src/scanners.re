@@ -73,7 +73,10 @@ pub fn open_block_directive_fence(s: &str) -> Option<usize> {
     let mut ctxmarker = 0;
     let len = s.len();
 /*!re2c
-    [:]{3,} / [^:\r\n\xff]*[\r\n\xff] { return Some(cursor); }
+    // Unlike a backtick fence's, the info string may hold the fence's own
+    // character after its first: `:::theorem{#thm:a}` (yuanme #51). No
+    // inline construct starts with `:`, so nothing else can read it.
+    [:]{3,} / ([^:\r\n\xff][^\r\n\xff]*)?[\r\n\xff] { return Some(cursor); }
     * { return None; }
 */
 }
